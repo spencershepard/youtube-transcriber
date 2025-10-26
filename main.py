@@ -7,7 +7,8 @@ using the youtube-transcript-api library with proxy support.
 
 import os
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -29,6 +30,9 @@ from youtube_transcript_api._errors import (
 
 # Load environment variables
 load_dotenv()
+
+# Initialize bearer token security
+security = HTTPBearer(auto_error=False)
 
 app = FastAPI(
     title="YouTube Transcription API",
@@ -89,6 +93,36 @@ class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")
     detail: Optional[str] = Field(None, description="Additional error details")
     video_id: Optional[str] = Field(None, description="Video ID that caused the error")
+
+def verify_bearer_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> bool:
+    """
+    Verify bearer token if API_TOKEN is set in environment variables.
+    Returns True if authentication is successful or not required.
+    Raises HTTPException if authentication fails.
+    """
+    api_token = os.getenv("API_TOKEN")
+    
+    # If no API token is configured, allow access
+    if not api_token:
+        return True
+    
+    # If API token is configured but no credentials provided
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Bearer token required",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    # Verify the token
+    if credentials.credentials != api_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    return True
 
 def get_youtube_api() -> YouTubeTranscriptApi:
     """
@@ -212,7 +246,8 @@ async def get_segmented_transcript(
     limit: Optional[int] = Query(None, description="Maximum number of segments to return", ge=1),
     merge_segments: Optional[int] = Query(None, description="Merge every N consecutive segments", ge=1),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds to include", gt=0),
-    sample_rate: Optional[int] = Query(None, description="Return every Nth segment (e.g., 2 = every other)", ge=1)
+    sample_rate: Optional[int] = Query(None, description="Return every Nth segment (e.g., 2 = every other)", ge=1),
+    authenticated: bool = Depends(verify_bearer_token)
 ):
     """
     Get a segmented transcript with timing information for each segment
@@ -275,7 +310,8 @@ async def get_unsegmented_transcript(
     video_id: str,
     languages: Optional[str] = Query(None, description="Comma-separated language codes (e.g., 'en,es,fr')"),
     translate_to: Optional[str] = Query(None, description="Language code to translate to"),
-    separator: str = Query(" ", description="Separator between transcript segments")
+    separator: str = Query(" ", description="Separator between transcript segments"),
+    authenticated: bool = Depends(verify_bearer_token)
 ):
     """
     Get a full unsegmented transcript as a single text block
@@ -321,7 +357,10 @@ async def get_unsegmented_transcript(
         raise handle_transcript_errors(e, video_id)
 
 @app.get("/transcript/available/{video_id}", response_model=AvailableTranscriptsResponse)
-async def get_available_transcripts(video_id: str):
+async def get_available_transcripts(
+    video_id: str,
+    authenticated: bool = Depends(verify_bearer_token)
+):
     """
     Get list of available transcripts for a video
     

@@ -10,8 +10,9 @@ A FastAPI-based microservice for extracting transcripts from YouTube videos usin
 - ⏱️ **Segmented & Unsegmented Formats**: Choose between timestamped segments or full text
 - � **Segment Filtering**: Limit, merge, sample, or time-filter segments
 - ⏰ **Precise Timing**: Timestamps rounded to hundredths of a second (0.01s precision)
-- �🌍 **Multi-language Support**: Request transcripts in specific languages
+- 🌍 **Multi-language Support**: Request transcripts in specific languages
 - 🔄 **Translation Support**: Translate transcripts to different languages
+- 🔐 **Optional Authentication**: Bearer token authentication for API access
 - 🛡️ **Proxy Support**: Built-in support for BrightData residential proxies
 - 📊 **Health Checks**: Built-in health monitoring endpoints
 - 🚀 **Production Ready**: Dockerized with multi-stage builds and security best practices
@@ -226,6 +227,7 @@ Filters are applied in this order for optimal results:
 | `HOST` | No | `0.0.0.0` | Server host |
 | `PORT` | No | `8000` | Server port |
 | `ENVIRONMENT` | No | `production` | Environment (development/production) |
+| `API_TOKEN` | No | - | Bearer token for API authentication (if set, all endpoints require auth) |
 | `BRIGHTDATA_USERNAME` | No | - | BrightData proxy username |
 | `BRIGHTDATA_PASSWORD` | No | - | BrightData proxy password |
 | `BRIGHTDATA_ENDPOINT` | No | `brd.superproxy.io:22225` | BrightData proxy endpoint |
@@ -244,6 +246,46 @@ The service supports BrightData residential proxies to work around IP restrictio
    ```
 
 Without proxy configuration, the service will attempt direct connections to YouTube, which may be blocked on cloud platforms.
+
+## Authentication
+
+The API supports optional Bearer token authentication. When the `API_TOKEN` environment variable is set, all API endpoints will require a valid Bearer token in the `Authorization` header.
+
+### Setting up Authentication
+
+1. **Set the API token** in your environment:
+   ```env
+   API_TOKEN=your_secret_token_here
+   ```
+
+2. **Make authenticated requests**:
+   ```bash
+   curl -H "Authorization: Bearer your_secret_token_here" \
+        "http://localhost:8000/transcript/segmented/dQw4w9WgXcQ"
+   ```
+
+### Authentication Behavior
+
+- **When `API_TOKEN` is not set**: All endpoints are publicly accessible
+- **When `API_TOKEN` is set**: All transcript endpoints require valid Bearer token
+- **Health endpoint**: Always accessible without authentication (for monitoring)
+- **Documentation endpoints**: Always accessible without authentication
+
+### Error Responses
+
+**Missing token:**
+```json
+{
+  "detail": "Bearer token required"
+}
+```
+
+**Invalid token:**
+```json
+{
+  "detail": "Invalid bearer token"  
+}
+```
 
 ## Deployment
 
