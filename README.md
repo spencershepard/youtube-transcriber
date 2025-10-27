@@ -13,7 +13,7 @@ A FastAPI-based microservice for extracting transcripts from YouTube videos usin
 - 🌍 **Multi-language Support**: Request transcripts in specific languages
 - 🔄 **Translation Support**: Translate transcripts to different languages
 - 🔐 **Optional Authentication**: Bearer token authentication for API access
-- 🛡️ **Proxy Support**: Built-in support for BrightData residential proxies
+- 🛡️ **Proxy Support**: Built-in support for Webshare and BrightData proxies
 - 📊 **Health Checks**: Built-in health monitoring endpoints
 - 🚀 **Production Ready**: Dockerized with multi-stage builds and security best practices
 - 📖 **Interactive Documentation**: Auto-generated OpenAPI/Swagger docs
@@ -50,8 +50,16 @@ A FastAPI-based microservice for extracting transcripts from YouTube videos usin
 # Build the image
 docker build -t youtube-transcriber .
 
-# Run the container
+# Run the container with Webshare proxy
 docker run -p 8000:8000 \
+  -e PROXY_TYPE=webshare \
+  -e WEBSHARE_USERNAME=your_username \
+  -e WEBSHARE_PASSWORD=your_password \
+  youtube-transcriber
+
+# Or run with BrightData proxy
+docker run -p 8000:8000 \
+  -e PROXY_TYPE=brightdata \
   -e BRIGHTDATA_USERNAME=your_username \
   -e BRIGHTDATA_PASSWORD=your_password \
   youtube-transcriber
@@ -73,6 +81,23 @@ python main.py
 Health check endpoint
 ```bash
 curl http://localhost:8000/health
+```
+
+### GET `/status`
+Get current proxy configuration status
+```bash
+curl http://localhost:8000/status
+```
+
+**Response:**
+```json
+{
+  "proxy_type": "webshare",
+  "proxy_configured": true,
+  "proxy_details": {
+    "username": "your_username"
+  }
+}
 ```
 
 ### GET `/transcript/segmented/{video_id}`
@@ -228,24 +253,49 @@ Filters are applied in this order for optimal results:
 | `PORT` | No | `8000` | Server port |
 | `ENVIRONMENT` | No | `production` | Environment (development/production) |
 | `API_TOKEN` | No | - | Bearer token for API authentication (if set, all endpoints require auth) |
+| `PROXY_TYPE` | No | - | Proxy type: `webshare`, `brightdata`, or empty for direct |
+| `WEBSHARE_USERNAME` | No | - | Webshare proxy username |
+| `WEBSHARE_PASSWORD` | No | - | Webshare proxy password |
 | `BRIGHTDATA_USERNAME` | No | - | BrightData proxy username (enables automatic IP rotation) |
 | `BRIGHTDATA_PASSWORD` | No | - | BrightData proxy password |
 | `BRIGHTDATA_ENDPOINT` | No | `brd.superproxy.io:22225` | BrightData proxy endpoint |
 
 ### Proxy Configuration
 
-The service supports BrightData residential proxies to work around IP restrictions that YouTube may impose on cloud servers.
+The service supports both Webshare and BrightData proxies to work around IP restrictions that YouTube may impose on cloud servers.
+
+#### Option 1: Webshare (Recommended)
+
+1. **Sign up for Webshare**: https://webshare.io/
+2. **Purchase a proxy plan**
+3. **Get your credentials** from the dashboard
+4. **Set environment variables**:
+   ```env
+   PROXY_TYPE=webshare
+   WEBSHARE_USERNAME=your_username
+   WEBSHARE_PASSWORD=your_password
+   ```
+
+#### Option 2: BrightData
 
 1. **Sign up for BrightData**: https://brightdata.com/
 2. **Purchase a residential proxy plan**
 3. **Get your credentials** from the dashboard
 4. **Set environment variables**:
    ```env
+   PROXY_TYPE=brightdata
    BRIGHTDATA_USERNAME=your_username
    BRIGHTDATA_PASSWORD=your_password
    ```
 
-Without proxy configuration, the service will attempt direct connections to YouTube, which may be blocked on cloud platforms.
+#### Direct Connection
+
+If you don't need proxy support, simply leave `PROXY_TYPE` unset or empty:
+```env
+# PROXY_TYPE=
+```
+
+The service will automatically fall back to direct connections if proxy configuration fails.
 
 ### IP Rotation
 
