@@ -144,18 +144,27 @@ def get_youtube_api() -> YouTubeTranscriptApi:
     proxy_endpoint = os.getenv("BRIGHTDATA_ENDPOINT", "brd.superproxy.io:22225")
     
     if proxy_username and proxy_password:
-        # Generate unique session ID for IP rotation
-        session_id = generate_session_id()
-        
-        # Add session parameter to username for IP rotation
-        rotated_username = f"{proxy_username}-session-{session_id}"
-        
-        # Configure BrightData residential proxy with rotation
-        proxy_config = GenericProxyConfig(
-            http_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}",
-            https_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}"
-        )
-        return YouTubeTranscriptApi(proxy_config=proxy_config)
+        try:
+            # Generate unique session ID for IP rotation
+            session_id = generate_session_id()
+            
+            # Add session parameter to username for IP rotation
+            rotated_username = f"{proxy_username}-session-{session_id}"
+            
+            # Configure BrightData residential proxy with rotation
+            proxy_config = GenericProxyConfig(
+                http_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}",
+                https_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}"
+            )
+            
+            # Test the proxy configuration by creating the API instance
+            return YouTubeTranscriptApi(proxy_config=proxy_config)
+            
+        except Exception as proxy_error:
+            print(f"Proxy configuration failed: {proxy_error}")
+            # Fallback to direct connection if proxy fails
+            print("Falling back to direct connection...")
+            return YouTubeTranscriptApi()
     
     # Fallback to direct connection
     return YouTubeTranscriptApi()
@@ -164,7 +173,30 @@ def handle_transcript_errors(e: Exception, video_id: str) -> HTTPException:
     """
     Convert youtube-transcript-api exceptions to appropriate HTTP exceptions
     """
-    if isinstance(e, TranscriptsDisabled):
+    error_str = str(e).lower()
+    
+    # Handle proxy-specific errors
+    if "407" in str(e) or "auth failed" in error_str or "ip_forbidden" in error_str:
+        return HTTPException(
+            status_code=502,
+            detail="Proxy authentication failed. Please check your proxy credentials or try again later."
+        )
+    elif "proxyerror" in error_str or "tunnel connection failed" in error_str:
+        return HTTPException(
+            status_code=502,
+            detail="Proxy connection failed. The service may be temporarily unavailable."
+        )
+    elif "max retries exceeded" in error_str or "connection pool" in error_str:
+        return HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again later."
+        )
+    elif "read timed out" in error_str or "timeout" in error_str:
+        return HTTPException(
+            status_code=504,
+            detail="Request timed out. Please try again later."
+        )
+    elif isinstance(e, TranscriptsDisabled):
         return HTTPException(
             status_code=403,
             detail=f"Transcripts are disabled for video {video_id}"
@@ -179,7 +211,7 @@ def handle_transcript_errors(e: Exception, video_id: str) -> HTTPException:
             status_code=404,
             detail=f"Video {video_id} is unavailable"
         )
-    elif "429" in str(e) or "too many requests" in str(e).lower():
+    elif "429" in str(e) or "too many requests" in error_str:
         return HTTPException(
             status_code=429,
             detail="Too many requests. Please try again later."
@@ -204,6 +236,53 @@ def handle_transcript_errors(e: Exception, video_id: str) -> HTTPException:
             status_code=500,
             detail=f"An unexpected error occurred: {str(e)}"
         )
+
+def fetch_with_retry(api: YouTubeTranscriptApi, video_id: str, languages: Optional[List[str]] = None, max_retries: int = 2):
+    """
+    Fetch transcript with retry logic and fallback to direct connection
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            if languages:
+                return api.fetch(video_id, languages=languages)
+            else:
+                return api.fetch(video_id)
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # If it's a proxy/timeout issue and we have retries left, try direct connection
+            if attempt < max_retries and ("max retries" in error_str or "timeout" in error_str or "proxy" in error_str):
+                print(f"Attempt {attempt + 1} failed with proxy, retrying with direct connection...")
+                # Create new API without proxy for retry
+                api = YouTubeTranscriptApi()
+            else:
+                # Final attempt failed or non-retryable error
+                raise e
+    
+    # Should never reach here
+    raise Exception("All retry attempts failed")
+
+def list_with_retry(api: YouTubeTranscriptApi, video_id: str, max_retries: int = 2):
+    """
+    List transcripts with retry logic and fallback to direct connection
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return api.list(video_id)
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # If it's a proxy/timeout issue and we have retries left, try direct connection
+            if attempt < max_retries and ("max retries" in error_str or "timeout" in error_str or "proxy" in error_str):
+                print(f"Attempt {attempt + 1} failed with proxy, retrying with direct connection...")
+                # Create new API without proxy for retry
+                api = YouTubeTranscriptApi()
+            else:
+                # Final attempt failed or non-retryable error
+                raise e
+    
+    # Should never reach here
+    raise Exception("All retry attempts failed")
 
 def apply_segment_filters(
     segments: List[TranscriptSegment], 
@@ -284,18 +363,23 @@ async def get_segmented_transcript(
         if languages:
             language_list = [lang.strip() for lang in languages.split(',')]
         
-        # Get transcript
-        if language_list:
-            transcript = api.fetch(video_id, languages=language_list)
-        else:
-            transcript = api.fetch(video_id)
+        # Get transcript list to access metadata with retry
+        transcript_list = list_with_retry(api, video_id)
         
         # Handle translation if requested
         if translate_to:
-            transcript_list = api.list(video_id)
             base_transcript = transcript_list.find_transcript(language_list or ['en'])
             translated_transcript = base_transcript.translate(translate_to)
             transcript = translated_transcript.fetch()
+            # Use translated transcript metadata
+            transcript_metadata = translated_transcript
+        else:
+            # Get transcript with retry
+            if language_list:
+                transcript_metadata = transcript_list.find_transcript(language_list)
+            else:
+                transcript_metadata = list(transcript_list)[0]
+            transcript = fetch_with_retry(api, video_id, language_list)
         
         # Convert to response format
         segments = []
@@ -311,10 +395,10 @@ async def get_segmented_transcript(
         segments = apply_segment_filters(segments, limit, merge_segments, max_duration, sample_rate)
         
         return SegmentedTranscriptResponse(
-            video_id=transcript.video_id,
-            language=transcript.language,
-            language_code=transcript.language_code,
-            is_generated=transcript.is_generated,
+            video_id=video_id,
+            language=transcript_metadata.language,
+            language_code=transcript_metadata.language_code,
+            is_generated=transcript_metadata.is_generated,
             segments=segments
         )
         
@@ -345,27 +429,32 @@ async def get_unsegmented_transcript(
         if languages:
             language_list = [lang.strip() for lang in languages.split(',')]
         
-        # Get transcript
-        if language_list:
-            transcript = api.fetch(video_id, languages=language_list)
-        else:
-            transcript = api.fetch(video_id)
+        # Get transcript list to access metadata with retry
+        transcript_list = list_with_retry(api, video_id)
         
         # Handle translation if requested
         if translate_to:
-            transcript_list = api.list(video_id)
             base_transcript = transcript_list.find_transcript(language_list or ['en'])
             translated_transcript = base_transcript.translate(translate_to)
             transcript = translated_transcript.fetch()
+            # Use translated transcript metadata
+            transcript_metadata = translated_transcript
+        else:
+            # Get transcript with retry
+            if language_list:
+                transcript_metadata = transcript_list.find_transcript(language_list)
+            else:
+                transcript_metadata = list(transcript_list)[0]
+            transcript = fetch_with_retry(api, video_id, language_list)
         
         # Combine all segments into single text
         full_text = separator.join([segment.text for segment in transcript])
         
         return UnsegmentedTranscriptResponse(
-            video_id=transcript.video_id,
-            language=transcript.language,
-            language_code=transcript.language_code,
-            is_generated=transcript.is_generated,
+            video_id=video_id,
+            language=transcript_metadata.language,
+            language_code=transcript_metadata.language_code,
+            is_generated=transcript_metadata.is_generated,
             full_text=full_text
         )
         
@@ -384,7 +473,9 @@ async def get_available_transcripts(
     """
     try:
         api = get_youtube_api()
-        transcript_list = api.list(video_id)
+        
+        # Get transcript list with retry mechanism
+        transcript_list = list_with_retry(api, video_id)
         
         transcripts = []
         for transcript in transcript_list:
