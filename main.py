@@ -6,6 +6,7 @@ using the youtube-transcript-api library with proxy support.
 """
 
 import os
+import uuid
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Query, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -124,9 +125,18 @@ def verify_bearer_token(credentials: Optional[HTTPAuthorizationCredentials] = Se
     
     return True
 
+def generate_session_id() -> str:
+    """
+    Generate a unique session ID for IP rotation using a short UUID.
+    """
+    return str(uuid.uuid4())[:8]
+
+
+
 def get_youtube_api() -> YouTubeTranscriptApi:
     """
-    Create and configure YouTubeTranscriptApi instance with proxy if configured
+    Create and configure YouTubeTranscriptApi instance with proxy if configured.
+    Uses unique session ID for each request to ensure IP rotation.
     """
     # Check for BrightData proxy configuration
     proxy_username = os.getenv("BRIGHTDATA_USERNAME")
@@ -134,10 +144,16 @@ def get_youtube_api() -> YouTubeTranscriptApi:
     proxy_endpoint = os.getenv("BRIGHTDATA_ENDPOINT", "brd.superproxy.io:22225")
     
     if proxy_username and proxy_password:
-        # Configure BrightData residential proxy
+        # Generate unique session ID for IP rotation
+        session_id = generate_session_id()
+        
+        # Add session parameter to username for IP rotation
+        rotated_username = f"{proxy_username}-session-{session_id}"
+        
+        # Configure BrightData residential proxy with rotation
         proxy_config = GenericProxyConfig(
-            http_url=f"http://{proxy_username}:{proxy_password}@{proxy_endpoint}",
-            https_url=f"http://{proxy_username}:{proxy_password}@{proxy_endpoint}"
+            http_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}",
+            https_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}"
         )
         return YouTubeTranscriptApi(proxy_config=proxy_config)
     

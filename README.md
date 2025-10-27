@@ -228,7 +228,7 @@ Filters are applied in this order for optimal results:
 | `PORT` | No | `8000` | Server port |
 | `ENVIRONMENT` | No | `production` | Environment (development/production) |
 | `API_TOKEN` | No | - | Bearer token for API authentication (if set, all endpoints require auth) |
-| `BRIGHTDATA_USERNAME` | No | - | BrightData proxy username |
+| `BRIGHTDATA_USERNAME` | No | - | BrightData proxy username (enables automatic IP rotation) |
 | `BRIGHTDATA_PASSWORD` | No | - | BrightData proxy password |
 | `BRIGHTDATA_ENDPOINT` | No | `brd.superproxy.io:22225` | BrightData proxy endpoint |
 
@@ -246,6 +246,23 @@ The service supports BrightData residential proxies to work around IP restrictio
    ```
 
 Without proxy configuration, the service will attempt direct connections to YouTube, which may be blocked on cloud platforms.
+
+### IP Rotation
+
+The service automatically rotates IP addresses for each request to avoid rate limiting and IP blocks. When BrightData proxy credentials are configured, each API call generates a unique 8-character session ID that ensures you get a different IP address for every request to YouTube.
+
+**How IP Rotation Works**:
+1. Each API request generates a unique 8-character session ID (e.g., `a1b2c3d4`)
+2. The session ID is appended to your BrightData username: `your-username-session-a1b2c3d4`
+3. BrightData assigns a different IP address for each unique session
+4. This ensures YouTube sees requests from different IP addresses
+
+**Benefits**:
+- ✅ Avoids rate limiting from repeated requests
+- ✅ Prevents IP-based blocks
+- ✅ Improves reliability for high-volume usage
+- ✅ Distributes requests across BrightData's IP pool
+- ✅ Zero configuration required - works automatically with BrightData credentials
 
 ## Authentication
 
