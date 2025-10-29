@@ -16,7 +16,7 @@ import uvicorn
 from dotenv import load_dotenv
 
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.proxies import GenericProxyConfig
+from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
 from youtube_transcript_api._errors import (
     TranscriptsDisabled,
     NoTranscriptFound,
@@ -125,48 +125,54 @@ def verify_bearer_token(credentials: Optional[HTTPAuthorizationCredentials] = Se
     
     return True
 
-def generate_session_id() -> str:
-    """
-    Generate a unique session ID for IP rotation using a short UUID.
-    """
-    return str(uuid.uuid4())[:8]
-
-
-
 def get_youtube_api() -> YouTubeTranscriptApi:
     """
     Create and configure YouTubeTranscriptApi instance with proxy if configured.
-    Uses unique session ID for each request to ensure IP rotation.
+    Supports both Webshare and BrightData proxies with simple configuration.
     """
-    # Check for BrightData proxy configuration
-    proxy_username = os.getenv("BRIGHTDATA_USERNAME")
-    proxy_password = os.getenv("BRIGHTDATA_PASSWORD")
-    proxy_endpoint = os.getenv("BRIGHTDATA_ENDPOINT", "brd.superproxy.io:22225")
+    # Check proxy type preference
+    proxy_type = os.getenv("PROXY_TYPE", "").lower()
     
-    if proxy_username and proxy_password:
-        try:
-            # Generate unique session ID for IP rotation
-            session_id = generate_session_id()
-            
-            # Add session parameter to username for IP rotation
-            rotated_username = f"{proxy_username}-session-{session_id}"
-            
-            # Configure BrightData residential proxy with rotation
-            proxy_config = GenericProxyConfig(
-                http_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}",
-                https_url=f"http://{rotated_username}:{proxy_password}@{proxy_endpoint}"
-            )
-            
-            # Test the proxy configuration by creating the API instance
-            return YouTubeTranscriptApi(proxy_config=proxy_config)
-            
-        except Exception as proxy_error:
-            print(f"Proxy configuration failed: {proxy_error}")
-            # Fallback to direct connection if proxy fails
-            print("Falling back to direct connection...")
-            return YouTubeTranscriptApi()
+    # Webshare proxy configuration
+    if proxy_type == "webshare":
+        webshare_username = os.getenv("WEBSHARE_USERNAME")
+        webshare_password = os.getenv("WEBSHARE_PASSWORD")
+        
+        if webshare_username and webshare_password:
+            try:
+                proxy_config = WebshareProxyConfig(
+                    proxy_username=webshare_username,
+                    proxy_password=webshare_password
+                )
+                return YouTubeTranscriptApi(proxy_config=proxy_config)
+            except Exception as e:
+                print(f"Webshare proxy failed: {e}")
+                print("Falling back to direct connection...")
+                return YouTubeTranscriptApi()
     
-    # Fallback to direct connection
+    # BrightData proxy configuration
+    elif proxy_type == "brightdata":
+        brightdata_username = os.getenv("BRIGHTDATA_USERNAME")
+        brightdata_password = os.getenv("BRIGHTDATA_PASSWORD")
+        brightdata_endpoint = os.getenv("BRIGHTDATA_ENDPOINT", "brd.superproxy.io:22225")
+        
+        if brightdata_username and brightdata_password:
+            try:
+                # Generate unique session ID for IP rotation
+                session_id = str(uuid.uuid4())[:8]
+                rotated_username = f"{brightdata_username}-session-{session_id}"
+                
+                proxy_config = GenericProxyConfig(
+                    http_url=f"http://{rotated_username}:{brightdata_password}@{brightdata_endpoint}",
+                    https_url=f"http://{rotated_username}:{brightdata_password}@{brightdata_endpoint}"
+                )
+                return YouTubeTranscriptApi(proxy_config=proxy_config)
+            except Exception as e:
+                print(f"BrightData proxy failed: {e}")
+                print("Falling back to direct connection...")
+                return YouTubeTranscriptApi()
+    
+    # No proxy or direct connection
     return YouTubeTranscriptApi()
 
 def handle_transcript_errors(e: Exception, video_id: str) -> HTTPException:
@@ -237,52 +243,47 @@ def handle_transcript_errors(e: Exception, video_id: str) -> HTTPException:
             detail=f"An unexpected error occurred: {str(e)}"
         )
 
-def fetch_with_retry(api: YouTubeTranscriptApi, video_id: str, languages: Optional[List[str]] = None, max_retries: int = 2):
+def fetch_with_retry(api: YouTubeTranscriptApi, video_id: str, languages: Optional[List[str]] = None):
     """
-    Fetch transcript with retry logic and fallback to direct connection
+    Fetch transcript with simple fallback to direct connection on proxy failure
     """
-    for attempt in range(max_retries + 1):
-        try:
+    try:
+        if languages:
+            return api.fetch(video_id, languages=languages)
+        else:
+            return api.fetch(video_id)
+    except Exception as e:
+        error_str = str(e).lower()
+        
+        # If it's likely a proxy issue, try with direct connection
+        if any(keyword in error_str for keyword in ["proxy", "timeout", "max retries", "connection"]):
+            print(f"Proxy failed, retrying with direct connection...")
+            fallback_api = YouTubeTranscriptApi()
             if languages:
-                return api.fetch(video_id, languages=languages)
+                return fallback_api.fetch(video_id, languages=languages)
             else:
-                return api.fetch(video_id)
-        except Exception as e:
-            error_str = str(e).lower()
-            
-            # If it's a proxy/timeout issue and we have retries left, try direct connection
-            if attempt < max_retries and ("max retries" in error_str or "timeout" in error_str or "proxy" in error_str):
-                print(f"Attempt {attempt + 1} failed with proxy, retrying with direct connection...")
-                # Create new API without proxy for retry
-                api = YouTubeTranscriptApi()
-            else:
-                # Final attempt failed or non-retryable error
-                raise e
-    
-    # Should never reach here
-    raise Exception("All retry attempts failed")
+                return fallback_api.fetch(video_id)
+        else:
+            # Re-raise non-proxy errors
+            raise e
 
-def list_with_retry(api: YouTubeTranscriptApi, video_id: str, max_retries: int = 2):
+def list_with_retry(api: YouTubeTranscriptApi, video_id: str):
     """
-    List transcripts with retry logic and fallback to direct connection
+    List transcripts with simple fallback to direct connection on proxy failure
     """
-    for attempt in range(max_retries + 1):
-        try:
-            return api.list(video_id)
-        except Exception as e:
-            error_str = str(e).lower()
-            
-            # If it's a proxy/timeout issue and we have retries left, try direct connection
-            if attempt < max_retries and ("max retries" in error_str or "timeout" in error_str or "proxy" in error_str):
-                print(f"Attempt {attempt + 1} failed with proxy, retrying with direct connection...")
-                # Create new API without proxy for retry
-                api = YouTubeTranscriptApi()
-            else:
-                # Final attempt failed or non-retryable error
-                raise e
-    
-    # Should never reach here
-    raise Exception("All retry attempts failed")
+    try:
+        return api.list(video_id)
+    except Exception as e:
+        error_str = str(e).lower()
+        
+        # If it's likely a proxy issue, try with direct connection
+        if any(keyword in error_str for keyword in ["proxy", "timeout", "max retries", "connection"]):
+            print(f"Proxy failed, retrying with direct connection...")
+            fallback_api = YouTubeTranscriptApi()
+            return fallback_api.list(video_id)
+        else:
+            # Re-raise non-proxy errors
+            raise e
 
 def apply_segment_filters(
     segments: List[TranscriptSegment], 
@@ -332,6 +333,34 @@ def apply_segment_filters(
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "youtube-transcription-api"}
+
+@app.get("/status")
+async def get_status(authenticated: bool = Depends(verify_bearer_token)):
+    """Get current proxy configuration status"""
+    proxy_type = os.getenv("PROXY_TYPE", "").lower()
+    
+    status = {
+        "proxy_type": proxy_type or "direct",
+        "proxy_configured": False,
+        "proxy_details": {}
+    }
+    
+    if proxy_type == "webshare":
+        webshare_username = os.getenv("WEBSHARE_USERNAME")
+        status["proxy_configured"] = bool(webshare_username and os.getenv("WEBSHARE_PASSWORD"))
+        if status["proxy_configured"]:
+            status["proxy_details"] = {"username": webshare_username}
+    
+    elif proxy_type == "brightdata":
+        brightdata_username = os.getenv("BRIGHTDATA_USERNAME")
+        status["proxy_configured"] = bool(brightdata_username and os.getenv("BRIGHTDATA_PASSWORD"))
+        if status["proxy_configured"]:
+            status["proxy_details"] = {
+                "username": brightdata_username,
+                "endpoint": os.getenv("BRIGHTDATA_ENDPOINT", "brd.superproxy.io:22225")
+            }
+    
+    return status
 
 @app.get("/transcript/segmented/{video_id}", response_model=SegmentedTranscriptResponse)
 async def get_segmented_transcript(
